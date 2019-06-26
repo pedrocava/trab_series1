@@ -1,0 +1,165 @@
+---
+title: "Trabalho de Análise de Série Temporais I"
+author: "Pedro Cavalcante"
+output: pdf_document
+bibliography: listb.bib
+---
+
+```{r setup, include = FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(forecast)
+library(ggplot2)
+library(tseries)
+library(xts)
+library(e1071)
+library(fitdistrplus)
+library(dplyr)
+library(aod)
+library(lmtest)
+serie = readRDS("serie.Rds") %>% log()
+```
+
+# Amostra
+
+A base de dados usada contém séries históricas de consumo de energia elétrica por hora de subsidiárias regionais dos EUA. Como as grandezas envolvidas são grandes porém não particularmente informativas usarei logarítimo natural da série.
+
+```{R, dpi = 150, echo = FALSE}
+
+autoplot(serie) +
+  ylab("Log do Consumo em MW/hora") + 
+  xlab("") +
+  labs(title = "Série de consumo da American Eletrical Power")
+
+```
+
+A série é de altíssima frequência e cobre um horizonte razoavelmente longo. Ao todo temos ``r length(serie)`` observações. Abaixo reproduzo deixo algumas estatísticas e visualizações descritivas simples. Elas são, em ordem, histograma, sumário da distribuição, quatro primeiros momentos amostrais centrais e gráfico de Cullen-Frey.
+
+```{R, echo = FALSE}
+hist(serie)
+summary(serie) ## sumário da distribuição
+
+moment(serie, 
+       order = 1, 
+       center = TRUE)
+moment(serie, 
+       order = 2, 
+       center = TRUE)
+moment(serie, 
+       order = 3, 
+       center = TRUE)
+moment(serie, 
+       order = 4, 
+       center = TRUE)
+
+descdist(as.numeric(serie),
+         boot = 100)
+
+normal_simulada = rnorm(n = length(serie), 
+                        mean = mean(serie), 
+                        sd = sd(serie))
+
+ks.test(x = as.numeric(serie), 
+        normal_simulada)
+```
+
+A assimetria com viés para a direita da média e a _leve_ cauda à direita, bem como o gráfico de Cullen-Frey sugerem que os dados seguem um processo gerador próximo de uma lognormal. Os resultados do teste Kolmogorov-Smirnof corroboram a não-normalidade dos dados.
+
+# Estacionariedade
+
+Os resultados do teste ADF indicam ausência de raiz unitária.
+
+```{R}
+adf.test(serie, 
+         alternative = "explosive")
+```
+
+Como evidência extra a favor, vamos estimar uma random walk com os dados na forma:
+
+$$y_t = \beta y_{t-1} + \epsilon_t $$
+E depois com um Teste de Wald testar a hipótese nula $H0: \beta = 1$.
+
+```{R}
+
+randomwalk = lm(serie ~ lag(serie)) 
+randomwalk %>% summary()
+
+wald.test(b = coef(randomwalk),
+          Sigma = vcov(randomwalk),
+          H0 = c(1),
+          Terms = 2)
+```
+
+Rejeitamos a hipótese com um baixíssimo p-valor. As evidências sugerem que de fato não temos raiz unitária.
+
+# Autocorrelação
+
+Graças à altíssima frequência da série podemos observar múltiplos padrões nos correlogramas. Existem padrões repetidos de consumo entre dias, semanas, meses e estações do ano. 
+
+```{R}
+ggAcf(serie, lag.max = 48) # dois dias
+ggAcf(serie, lag.max = (24*30)) # um mês
+ggAcf(serie, lag.max = (24*30*3)) # um trimestre
+ggAcf(serie, lag.max = (24*30*12)) # um ano
+ggAcf(serie, lag.max = (24*30*12*5)) # cinco anos
+```
+
+Como esperado de um processo AR de alta ordem, observamos um misto de decrescimento exponencial e comportamento sinoidal na função de autocorrelação. Padrões muito menos ricos aparecem nas autocorrelações parciais.
+
+```{R, dpi = 150}
+ggPacf(serie, lag.max = 48) # dois dias
+ggPacf(serie, lag.max = (24*30)) # um mês
+```
+
+#### Uma pequena nota
+
+A frequência da série é altíssima. Isso tende a piorar o _fitting_ de modelos usualmente aplicados em dados de frequências mais baixas, por isso transformarei em uma série semanal.
+
+```{R, dpi = 150}
+serie = (to.weekly(serie)$serie.Open + to.weekly(serie)$serie.Close)/2
+autoplot(serie)
+ggAcf(serie, lag.max = 4*6) # um semestre
+ggPacf(serie)
+```
+
+# Estimação e diagnósticos
+
+A análise dos correlogramas e a série ser integrada de ordem $0$ sugere que o melhor modelo é um ARIMA(2, 0, 3). Irei usar o algorítimo de seleção HK [@hyndman2007automatic] usando o Critério Bayesiano de Informação para colher evidências extras de que é um modelo apropriado. Como benchmark usarei um AR(1).
+
+```{R}
+modelo = auto.arima(serie,
+                    stationary = TRUE,
+                    seasonal = TRUE,
+                    allowmean = TRUE,
+                    max.order = 2000,
+                    ic = c("bic"))
+
+summary(modelo)
+
+benchmark = lm(serie ~ lag(serie)) 
+benchmark %>% summary()
+
+RMSE_benchmark = sqrt(sum(benchmark$residuals^2) / benchmark$df)
+RMSE_arima = sqrt(sum(modelo$residuals^2) / (modelo$nobs - length(modelo$coef)))
+
+melhora = (round(RMSE_benchmark/RMSE_arima, digits = 3) - 1)*100
+
+```
+
+O modelo ARIMA apresenta um RMSE ``r melhora`` por cento abaixo do benchmark. Procuramos agora por autocorrelaçãos serial e normalidade dos resíduos.
+
+Para autocorrelação, uma escolha natural seria usar o teste Ljung-Box, mas como mostra @hayashi, a estatística $Q$ do teste converge assintoticamente em distribuição para uma chi-quadrado se e somente se $\mathbb{E}[y_t | y_{t-1}, y_{t-2},...] = 0$, o que claramente não procede para modelos ARMA($P$, $Q$) se $P > 0$. @maddala1992introduction sugere o uso do teste de @breusch1979simple. 
+
+```{R}
+primeirolag = stats::lag(serie)
+segundo = stats::lag(serie, k = 2)
+terceiro = stats::lag(serie, k = 3)
+
+bptest(serie ~ primeirolag + segundo + terceiro)
+
+jarque.bera.test(modelo$residuals)
+```
+
+Não rejeitamos a hipótese nula de homocedasticidade do Teste de Breusch-Pagan a $5\%$ de significânia e marginalmente rejeitamos normalidade nos resíduos no mesmo nível de significância. A $1\%$ de significância, temos homocedasticidade e normalidade dos resíduos. Dado o tamanho atípico da amostra, parece ser razoável requerer níveis menores que o usual de significância.
+
+# Referências

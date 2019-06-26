@@ -1,0 +1,23 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1560800391681.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "3827925147",
+    "id" : "436E0DA1",
+    "lastKnownWriteTime" : 1560821159,
+    "last_content_update" : 1560821159331,
+    "path" : "C:/Users/pedro/Desktop/trab_series1/analise.R",
+    "project_path" : "analise.R",
+    "properties" : {
+        "cursorPosition" : "17,0",
+        "scrollLine" : "0",
+        "tempName" : "Untitled1"
+    },
+    "relative_order" : 2,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}
